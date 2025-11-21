@@ -1,35 +1,117 @@
-name: Build Windows Wheels
+name: Build webrtc_audio_all Windows wheel (WebRTC M110 APM)
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    tags:
+      - 'v*'
+
+env:
+  PYTHON_VERSION: '3.10'
+  WEBRTC_BRANCH: 'branch-heads/5105'   # M110
 
 jobs:
-  build:
-    runs-on: windows-latest
+  build-windows:
+    runs-on: windows-2022
+    timeout-minutes: 360
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Upgrade pip
-        run: python -m ensurepip --upgrade
+    - name: Install common tools
+      run: |
+        python -m ensurepip --upgrade
+        python -m pip install --upgrade pip setuptools wheel
+        choco install -y ninja wget git
+      shell: cmd
 
-      - name: Install build tools
-        run: python -m pip install --upgrade pip setuptools wheel
+    - name: Install depot_tools
+      run: |
+        mkdir C:\depot_tools
+        set PATH=C:\depot_tools;%PATH%
+        powershell -Command "Invoke-WebRequest -Uri https://chromium.googlesource.com/chromium/tools/depot_tools.git/info/refs -UseBasicParsing -OutFile NUL" || echo ok
+        git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git C:\depot_tools
+        setx DEPOT_TOOLS_WIN_TOOLCHAIN 0
+      shell: cmd
 
-      - name: Build wheel
-        run: python setup.py bdist_wheel
+    - name: Ensure PATH includes depot_tools
+      run: |
+        echo %PATH%
+      shell: cmd
 
-      - name: Upload wheel artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: webrtc_audio_all-wheel
-          path: dist/*.whl
+    - name: Fetch WebRTC M110 (with retries)
+      run: |
+        set DEPOT_TOOLS_WIN_TOOLCHAIN=0
+        mkdir webrtc_src
+        cd webrtc_src
+        git init
+        git remote add origin https://webrtc.googlesource.com/src
+        for /L %%i in (1,1,3) do (
+          echo fetch attempt %%i
+          git fetch --depth=1 origin %WEBRTC_BRANCH% && break || (echo fetch failed, retrying && timeout /t 10)
+        )
+        git checkout FETCH_HEAD
+        cd ..
+      shell: cmd
+      env:
+        WEBRTC_BRANCH: ${{ env.WEBRTC_BRANCH }}
+
+    - name: GN gen & ninja build audio_processing
+      shell: bash
+      run: |
+        set -e
+        cd webrtc_src || exit 1
+        # Use GN from depot_tools on PATH
+        gn gen out/Release --args="is_debug=false target_os=\"win\" target_cpu=\"x64\" rtc_build_examples=false rtc_include_tests=false use_rtti=true"
+        # build audio_processing target; allow failures but collect logs
+        ninja -C out/Release audio_processing || true
+        ninja -C out/Release webrtc_audio_processing || true
+        cd ..
+
+    - name: Add CMake wrapper & build webrtc_apm_wrapper
+      shell: cmd
+      run: |
+        REM Assume CMakeLists.txt and bindings are present in repo root
+        mkdir build || echo ok
+        cd build
+        cmake .. -G "Visual Studio 17 2022" -A x64 -DWEBRTC_SRC=%CD%\..\webrtc_src
+        cmake --build . --config Release --target webrtc_apm_wrapper
+        cd ..
+      env:
+        WEBRTC_SRC: ${{ github.workspace }}\webrtc_src
+
+    - name: Copy generated DLL into package folder
+      shell: cmd
+      run: |
+        if exist build\Release\webrtc_apm_x64.dll (
+          copy /Y build\Release\webrtc_apm_x64.dll webrtc_audio_all\bin\webrtc_audio_processing_x64.dll
+        ) else (
+          echo "DLL not found in build\\Release; listing build directory" & dir build & exit 1
+        )
+
+    - name: Build wheel
+      shell: cmd
+      run: |
+        python -m pip install build
+        python -m build --wheel
+
+    - name: Upload wheel artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: wheel
+        path: dist/*.whl
+
+    - name: Create GitHub Release and Upload wheel (optional)
+      if: success()
+      uses: softprops/action-gh-release@v1
+      with:
+        files: dist/*.whl
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
