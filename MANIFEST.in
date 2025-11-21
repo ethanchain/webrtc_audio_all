@@ -1,1 +1,1 @@
-include webrtc_audio_all/webrtc_apm_x64.dll
+recursive-include webrtc_audio_all/bin *.dll
