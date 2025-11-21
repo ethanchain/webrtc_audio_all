@@ -1,4 +1,4 @@
-name: build-webrtc
+name: build-webrtc-apm
 
 on: [push]
 
@@ -12,7 +12,7 @@ jobs:
       - name: Install Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.10
+          python-version: "3.10"
 
       - name: Install depot_tools
         run: |
@@ -20,9 +20,22 @@ jobs:
           echo "${{ github.workspace }}/depot_tools" >> $GITHUB_PATH
         shell: bash
 
+      - name: Fetch WebRTC source
+        run: |
+          mkdir webrtc_src
+          cd webrtc_src
+          fetch --nohooks webrtc
+          gclient sync
+        shell: bash
+
       - name: Build WebRTC audio_processing
         run: |
-          cd webrtc_src
+          cd webrtc_src/src
           gn gen out/Release --args="is_debug=false target_os=\"win\" target_cpu=\"x64\" rtc_build_examples=false rtc_include_tests=false use_rtti=true"
           ninja -C out/Release audio_processing
+        shell: bash
+
+      - name: List build results
+        run: |
+          ls -R webrtc_src/src/out/Release
         shell: bash
