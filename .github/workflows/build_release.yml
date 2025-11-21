@@ -1,71 +1,35 @@
-name: Build & Release Windows wheel
+name: Build Windows Wheels
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
-  build-windows-wheel:
-    runs-on: windows-2022
-    timeout-minutes: 240
+  build:
+    runs-on: windows-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Python 3.10
-        uses: actions/setup-python@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Install tool dependencies
-        run: |
-          python -m ensurepip
-          python -m pip install --upgrade pip setuptools wheel cmake ninja build
+      - name: Upgrade pip
+        run: python -m ensurepip --upgrade
 
-      - name: Fetch minimal WebRTC M110 (shallow)
-        run: |
-          echo "Fetching WebRTC M110..."
-          mkdir webrtc_src
-          cd webrtc_src
-          git init
-          git remote add origin https://webrtc.googlesource.com/src
-          git fetch --depth=1 origin branch-heads/5105
-          git checkout FETCH_HEAD
-          cd ..
-
-      - name: GN gen & build audio_processing
-        run: |
-          cd webrtc_src
-          mkdir -p out/Release
-          gn gen out/Release --args="is_debug=false target_os=\"win\" target_cpu=\"x64\" rtc_build_examples=false rtc_include_tests=false use_rtti=true"
-          ninja -C out/Release audio_processing || true
-          ninja -C out/Release webrtc_audio_processing || true
-        shell: bash
-
-      - name: Build wrapper DLL (CMake)
-        run: |
-          mkdir build || echo ok
-          cd build
-          cmake .. -G "Visual Studio 17 2022" -A x64 -DWEBRTC_SRC=../webrtc_src
-          cmake --build . --config Release --target webrtc_apm_wrapper
-          cd ..
-        shell: cmd
-
-      - name: Copy DLL into package
-        run: |
-          copy /Y build\\Release\\webrtc_apm_x64.dll webrtc_audio_all\\webrtc_apm_x64.dll
-        shell: cmd
+      - name: Install build tools
+        run: python -m pip install --upgrade pip setuptools wheel
 
       - name: Build wheel
-        run: |
-          python -m pip install build
-          python -m build --wheel
-        shell: bash
+        run: python setup.py bdist_wheel
 
-      - name: Create GitHub Release and upload wheel
-        uses: softprops/action-gh-release@v1
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
         with:
-          files: dist/*.whl
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: webrtc_audio_all-wheel
+          path: dist/*.whl
